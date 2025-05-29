@@ -1,29 +1,24 @@
-# main.py
-
-import os
+import re
 import json
+import os
 import requests
+from bs4 import BeautifulSoup
 from urllib.parse import urlparse
-
-from flask import Flask
-from threading import Thread
-
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# -----------------------------
-# 🔧 CONFIGURATION
-# -----------------------------
-API_ID = int(os.getenv("API_ID", "123456"))
-API_HASH = os.getenv("API_HASH", "your_api_hash")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
+# ========== CONFIGURATION ==========
+API_ID = 12345678  # আপনার API_ID
+API_HASH = "your_api_hash"
+BOT_TOKEN = "your_bot_token"
+WHITELIST_FILE = "whitelist.json"
+ADMIN_IDS = [123456789]  # আপনার Telegram user ID
+# ===================================
 
-WHITELIST_FILE = "shortners.json"
+app = Client("shortner_bypass_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# -----------------------------
-# 🔄 WHITELIST MANAGEMENT
-# -----------------------------
+# ========== UTILITIES ==========
+
 def load_whitelist():
     if not os.path.exists(WHITELIST_FILE):
         with open(WHITELIST_FILE, "w") as f:
@@ -35,114 +30,103 @@ def save_whitelist(data):
     with open(WHITELIST_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-def is_allowed(url):
-    domain = urlparse(url).netloc.replace("www.", "")
-    return domain in load_whitelist()
+# ========== BYPASS FUNCTION ==========
 
-def get_method(domain):
-    return load_whitelist().get(domain)
+def bypass_link(url: str) -> str:
+    whitelist = load_whitelist()
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower().replace("www.", "")
 
-def get_domain_key(url):
-    return urlparse(url).netloc.replace("www.", "")
-
-# -----------------------------
-# 🔗 BYPASS LOGIC
-# -----------------------------
-def bypass_link(url):
-    domain = get_domain_key(url)
-    method = get_method(domain)
-
-    if method == "simple_redirect":
-        try:
-            res = requests.head(url, allow_redirects=True, timeout=10)
-            return res.url
-        except:
-            return None
-    elif method == "gplink":
-        return "https://example.com/final_link_from_gplinks"
-    elif method == "droplink":
-        return "https://example.com/final_link_from_droplink"
-    else:
+    method = whitelist.get(domain)
+    if not method:
         return None
 
-# -----------------------------
-# 🌐 FLASK APP
-# -----------------------------
-flask_app = Flask(__name__)
+    print(f"[Bypass] Domain: {domain} | Method: {method}")
 
-@flask_app.route('/')
-def home():
-    return "✅ Telegram Bypass Bot is running!"
+    try:
+        if method == "simple_redirect":
+            resp = requests.get(url, timeout=5, allow_redirects=True)
+            return resp.url
 
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=8000)
+        elif method == "droplink":
+            headers = {
+                "User-Agent": "Mozilla/5.0"
+            }
+            session = requests.Session()
+            resp = session.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(resp.text, "html.parser")
 
-# -----------------------------
-# 🤖 TELEGRAM BOT
-# -----------------------------
-bot = Client("bypass-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+            final_link = None
+            for a in soup.find_all("a", href=True):
+                if "redirect" in a["href"]:
+                    final_link = a["href"]
+                    break
 
-@bot.on_message(filters.private & filters.text)
-async def handle_message(client, message: Message):
-    text = message.text.strip()
+            if final_link and not final_link.startswith("http"):
+                final_link = "https://droplink.co" + final_link
 
-    if text.startswith("/addshortner"):
-        if message.from_user.id != ADMIN_ID:
-            return await message.reply("❌ অনুমতি নেই।")
-        try:
-            _, domain, method = text.split()
-            whitelist = load_whitelist()
-            whitelist[domain] = method
-            save_whitelist(whitelist)
-            return await message.reply(f"✅ `{domain}` যুক্ত করা হয়েছে `{method}` মেথডে।")
-        except:
+            if final_link:
+                final_resp = session.get(final_link, headers=headers, timeout=10, allow_redirects=True)
+                return final_resp.url
+
+        # ভবিষ্যতে আরও মেথড যুক্ত করতে পারবেন
+    except Exception as e:
+        print("[Bypass Error]", e)
+        return None
+
+# ========== COMMANDS ==========
+
+@app.on_message(filters.command("start"))
+async def start_handler(client, message: Message):
+    await message.reply("👋 হ্যালো! শর্টলিংক পাঠান, আমি অরিজিনাল লিংক বের করে দেবো।")
+
+@app.on_message(filters.command("addshortner") & filters.user(ADMIN_IDS))
+async def add_shortner(client, message: Message):
+    try:
+        parts = message.text.split()
+        if len(parts) != 3:
             return await message.reply("⚠️ সঠিক ফর্ম্যাট:\n`/addshortner domain.com method`")
 
-    elif text.startswith("/removeshortner"):
-        if message.from_user.id != ADMIN_ID:
-            return await message.reply("❌ অনুমতি নেই।")
-        try:
-            _, domain = text.split()
-            whitelist = load_whitelist()
-            if domain in whitelist:
-                del whitelist[domain]
-                save_whitelist(whitelist)
-                return await message.reply(f"❌ `{domain}` মুছে ফেলা হয়েছে।")
-            else:
-                return await message.reply("⚠️ এই ডোমেইন whitelist-এ নেই।")
-        except:
-            return await message.reply("⚠️ সঠিক ফর্ম্যাট:\n`/removeshortner domain.com`")
-
-    elif text.startswith("/showshortners"):
-        if message.from_user.id != ADMIN_ID:
-            return await message.reply("❌ অনুমতি নেই।")
+        domain, method = parts[1], parts[2]
         whitelist = load_whitelist()
-        if not whitelist:
-            return await message.reply("⚠️ এখনো কোনো শর্টনার এড করা হয়নি।")
-        msg = "**📋 whitelist শর্টনার তালিকা:**\n"
-        for k, v in whitelist.items():
-            msg += f"- `{k}` → `{v}`\n"
-        return await message.reply(msg)
+        whitelist[domain.lower()] = method
+        save_whitelist(whitelist)
+        await message.reply(f"✅ `{domain}` whitelist-এ `{method}` মেথড সহ যুক্ত হয়েছে।")
+    except Exception as e:
+        print("[Add Shortner Error]", e)
+        await message.reply("❌ অ্যাড করতে সমস্যা হয়েছে।")
 
-    elif text.startswith("/start"):
-        return await message.reply("👋 হ্যালো! আমাকে শর্টলিংক পাঠান এবং আমি বাইপাস করে মূল লিংক বের করে দিব।")
-
-    elif text.startswith("http"):
-        url = text
-        if not is_allowed(url):
-            return await message.reply("❌ এই লিংকটি whitelist-এ নেই।\n\n📌 এড করতে: `/addshortner domain method`")
-        await message.reply("🔄 লিংক বাইপাস করা হচ্ছে...")
-        result = bypass_link(url)
-        if result:
-            await message.reply(f"✅ মূল লিংক:\n{result}")
-        else:
-            await message.reply("❌ দুঃখিত, বাইপাস করা যায়নি।")
+@app.on_message(filters.command("showshortners") & filters.user(ADMIN_IDS))
+async def show_whitelist(client, message: Message):
+    data = load_whitelist()
+    if not data:
+        await message.reply("⚠️ এখনো কোনো শর্টনার অ্যাড করা হয়নি।")
     else:
-        await message.reply("⚠️ একটি বৈধ শর্টলিংক পাঠান অথবা কমান্ড ব্যবহার করুন।")
+        text = "**🔗 Whitelisted Domains:**\n"
+        for domain, method in data.items():
+            text += f"• `{domain}` ➜ `{method}`\n"
+        await message.reply(text)
 
-# -----------------------------
-# 🚀 START
-# -----------------------------
+# ========== MAIN LOGIC ==========
+
+@app.on_message(filters.text & ~filters.command(["start", "addshortner", "showshortners"]))
+async def bypass_message(client, message: Message):
+    urls = re.findall(r'https?://\S+', message.text)
+    if not urls:
+        return
+
+    replies = []
+    for url in urls:
+        original = bypass_link(url)
+        if original:
+            replies.append(f"🔗 <b>Bypassed:</b>\n<code>{original}</code>")
+        else:
+            replies.append(f"❌ <b>Could not bypass:</b> {url}")
+
+    await message.reply("\n\n".join(replies), quote=True, parse_mode="html")
+
+# ========== RUN ==========
+
 if __name__ == "__main__":
-    Thread(target=run_flask).start()
-    bot.run()
+    print("✅ Bot is running...")
+    app.run()
